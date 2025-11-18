@@ -1324,53 +1324,70 @@ def get_user_subscriptions(user_id):
 def check_subscription(user_id):
     if request.method == "OPTIONS":
         return '', 200
-
+    
     try:
         if db is None:
-            return jsonify({"isPremium": False}), 200
-
-        subs_snapshot = db.collection('subscriptions') \
-            .where(filter=FieldFilter('userId', '==', user_id)) \
-            .where(filter=FieldFilter('status', '==', 'active')) \
-            .order_by('expiresAt', direction='DESCENDING') \
-            .limit(5) \
+            return jsonify({
+                'isPremium': False,
+                'plan': None,
+                'expiresAt': None
+            }), 200
+        
+        # 🔥 Simplified query — no index required
+        subs_ref = db.collection("subscriptions") \
+            .where(filter=FieldFilter("userId", "==", user_id)) \
+            .limit(15) \
             .stream(timeout=5)
-
+        
         is_premium = False
         active_plan = None
         expiry_date_str = None
         now_time = now_utc()
-
-        for doc in subs_snapshot:
+        
+        for doc in subs_ref:
             data = doc.to_dict()
-            expires_at = data.get('expiresAt')
-
-            if expires_at:
-                try:
-                    expiry_date = datetime.fromisoformat(
-                        expires_at.replace('Z', '+00:00')
-                    )
-                    if expiry_date > now_time:
-                        is_premium = True
-                        active_plan = data.get('plan')
-                        expiry_date_str = expires_at
-                        break
-                except Exception as e:
-                    print(f"⚠️ Expiry parse error: {e}")
-                    continue
-
+            status = data.get("status")
+            expires_at = data.get("expiresAt")
+            
+            if status != "active" or not expires_at:
+                continue
+            
+            try:
+                expiry_date = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if expiry_date > now_time:
+                    is_premium = True
+                    active_plan = data.get("plan")
+                    expiry_date_str = expires_at
+                    break
+            except Exception as parse_error:
+                print(f"⚠️ Expiry parse error: {parse_error}")
+                continue
+        
         return jsonify({
-            'isPremium': is_premium,
-            'plan': active_plan,
-            'expiresAt': expiry_date_str
+            "isPremium": is_premium,
+            "plan": active_plan,
+            "expiresAt": expiry_date_str
         }), 200
-
+    
     except Exception as e:
         print(f"❌ Check subscription error: {e}")
-        if "deadline exceeded" in str(e).lower() or "timeout" in str(e).lower():
-            return jsonify({'isPremium': False}), 200
-        return jsonify({'error': 'Failed to check premium status'}), 500
-    
+        error_str = str(e).lower()
+        
+        # Handle timeout/deadline errors gracefully
+        if "deadline exceeded" in error_str or "timeout" in error_str:
+            return jsonify({
+                'isPremium': False,
+                'plan': None,
+                'expiresAt': None
+            }), 200
+        
+        # Return safe default for other errors
+        return jsonify({
+            'isPremium': False,
+            'plan': None,
+            'expiresAt': None,
+            'error': 'Failed to check premium status'
+        }), 200  # Changed from 500 to 200
 # ==================== Admin: Get All Subscriptions ====================
 @app.route("/api/admin/subscriptions", methods=["GET", "OPTIONS"])
 def admin_subscriptions():
